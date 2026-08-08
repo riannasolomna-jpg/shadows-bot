@@ -1,241 +1,254 @@
 import os
 import time
 import threading
-import requests
 import telebot
-from dotenv import load_dotenv
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from telebot import types
+import requests
+from flask import Flask
 
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8644839960:AAGuezNejW02oqd6omY4GLzmYV7j56INarw")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-ADMIN_ID = 5076963429
-
-# Простой веб-сервер, чтобы Render Free Web Service не закрывал процесс
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-
-def run_health_check_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
-
-threading.Thread(target=run_health_check_server, daemon=True).start()
+# === ИНИЦИАЛИЗАЦИЯ И НАСТРОЙКИ ===
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+ADMIN_ID = 5076963429  # Твой Telegram ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
-WELCOME_TEXT = (
-    "👋 **Приветствуем!**\n\n"
-    "Для вступления отправьте сюда вашу анкету одним или несколькими сообщениями.\n\n"
-    "📌 **Как работает проверка:**\n"
-    "• Все первичные ошибки и замечания формирует автоматический бот-модератор.\n"
-    "• Бот объединяет ваши сообщения в течение **30 секунд** в одну анкету — отправляйте части подряд.\n"
-    "• После отправки бот сразу же выдаст вам список правок или подтвердит принятие.\n"
-    "• Как только ваша анкета будет полностью одобрена ботом, он автоматически отправит её на окончательное рассмотрение администрации, и вы получите уведомление.\n\n"
-    "❓ По любым возникшим проблемам и вопросам обращайтесь к @CrazyCrabSalad."
-)
+@app.route('/')
+def home():
+    return "Bot is alive!", 200
 
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+# === ХРАНИЛИЩА ДАННЫХ ===
 user_buffers = {}
 user_timers = {}
+user_roles = {}
+admin_reply_state = {}  # Для хранения ID игрока, которому админ пишет ответ
 
 SYSTEM_PROMPT = """
-Ты — помощник модератора текстовой ролевой игры по фандому «Дом, в котором».
+Ты — строгий и объективный проверяющий анкет персонажей в текстовой ролевой игре.
+Твоя задача — проанализировать текст анкеты и вынести решение: «Одобрено» или «Требует правок».
 
-ТВОЯ ЗАДАЧА: Проверить анкету персонажа и сформировать точечный список замечаний для игрока.
+ПРАВИЛА ПРОВЕРКИ:
+1. Проверяй полноту всех стандартных пунктов (Имя/Кличка, Возраст, Внешность, Характер, Предыстория/Биография).
+2. ПРОВЕРКА ДУБЛИКАТОВ И ПОВТОРОВ:
+   - Если в тексте есть повторяющиеся пункты или продублированные блоки текста, укажи: «Обнаружено дублирование информации/пунктов. Пожалуйста, удалите повторы.»
+3. ПРОВЕРКА ОБЪЁМА И ЛОГИКИ:
+   - Если пункт расписан слишком скупо (менее 3-4 предложений для Характера/Истории), укажи на необходимость расширить его.
+   - Указывай только на критические логические ошибки и противоречия.
 
-1. ПРОВЕРКА НАЛИЧИЯ ОБЯЗАТЕЛЬНЫХ ПУНКТОВ И ЛОРА:
-Если любой из обязательных пунктов отсутствует — это СТРОГАЯ ОШИБКА. Напрямик напиши, какого именно пункта нет.
+ФОРМАТ ОТВЕТА:
+Если всё хорошо, напиши коротко:
+Статус: Одобрено.
+Замечаний нет.
 
-• Обязательные пункты для «Домовца»:
-1. Кличка
-2. Стая (Жрецы, Искры, Гавена, Утопленники, Кометы, Орфы + опционально Мистерийцы)
-3. Пол
-4. Возраст (14-18 лет)
-5. Заболевание (СТРОГО ОБЯЗАТЕЛЬНЫЙ ПУНКТ! Оценивай логически по лору Дома:
-   - В пункте должно быть физическое заболевание/инвалидность ИЛИ...
-   - В биографии/предыстории должно быть логическое объяснение (например: за ребенка доплатили, дали взятку, перевели по блату, связи и т.д.).
-   - Если есть хотя бы одно из двух (физ. болезнь ИЛИ объяснение с доплатой/связями в био) — ПУНКТ СЧИТАЕТСЯ ПРОЙДЕННЫМ. Расписывать симптомы к каждой болезни НЕ требуется)
-6. Внешность
-7. Характер (мин. 200 символов)
-8. Причина попадания
-9. Возраст попадания
-10. Умения (описывать полную механику НЕ требуется)
-11. Юз
-
-• Обязательные пункты для «Персонала»:
-1. Кличка
-2. Пол
-3. Возраст (20+ лет)
-4. Внешность
-5. Характер (мин. 200 символов)
-6. Предыстория (мин. 50-70 символов)
-7. Должность
-8. Юз
-
-2. 2. ПРОВЕРКА ОБЪЁМА, ЛОГИКИ И ДУБЛИКАТОВ:
-- Если в тексте присутствуют ДВА ОДИНАКОВЫХ пункта (например, два раза написано «Характер» или «Внешность»), напиши: «Обнаружено дублирование пунктов [название пункта]. Пожалуйста, удалите повторы.»
-- Если весь текст анкеты или его части продублированы дважды подряд, укажи: «Текст анкеты продублирован. Пожалуйста, отправьте вариант без повторов.»
-- Если в пункте мало текста (например, в Характере или Предыстории), укажи текущий объём и точный минимум, который должен быть.
-- Указывай ТОЛЬКО на слишком грубые логические ошибки и критические несоответствия лору стаи.
-
-3. ОРФОГРАФИЯ:
-Укажи явные опечатки и ошибки, если они есть.
-
-ФОРМАТ ТВОЕГО ОТВЕТА (Строго придерживайся структуры):
-
-СТАТУС: [Принять / Требует правок]
-
-ЗАМЕЧАНИЯ ДЛЯ ИГРОКА:
-(Если СТАТУС = Требует правок, составь ЕДИНЫЙ СТРОГИЙ НУМЕРОВАННЫЙ СПИСОК (1, 2, 3...). Если ВСЁ ХОРОШО — напиши "Нет")
-1. ...
-2. ...
-
-ОТЧЕТ ДЛЯ АДМИНА:
-[Краткое резюме для владельца в 2-3 предложения]
+Если есть ошибки:
+Статус: Требует правок.
+Пункты с замечаниями:
+- [Название пункта]: [В чём ошибка и как исправить]
 """
 
-def send_smart_message(chat_id, text):
-    """Безопасная отправка длинных сообщений с поддержкой Markdown"""
+# === КЛАВИАТУРЫ ===
+def get_main_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton("📝 Отправить анкету")
+    btn2 = types.KeyboardButton("❓ Апелляция / Помощь")
+    markup.add(btn1, btn2)
+    return markup
+
+def get_role_keyboard():
+    markup = types.InlineKeyboardMarkup()
+    btn_dom = types.InlineKeyboardButton("🏠 Домовец", callback_data="role_domovets")
+    btn_staff = types.InlineKeyboardButton("👔 Персонал / Опекун", callback_data="role_staff")
+    markup.row(btn_dom, btn_staff)
+    return markup
+
+def get_admin_action_keyboard(user_id):
+    markup = types.InlineKeyboardMarkup()
+    btn_accept = types.InlineKeyboardButton("✅ Принять", callback_data=f"adm_accept_{user_id}")
+    btn_reject = types.InlineKeyboardButton("❌ Отклонить", callback_data=f"adm_reject_{user_id}")
+    btn_reply = types.InlineKeyboardButton("💬 Ответить", callback_data=f"adm_reply_{user_id}")
+    markup.row(btn_accept, btn_reject)
+    markup.row(btn_reply)
+    return markup
+
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+def send_smart_message(chat_id, text, reply_markup=None):
     if len(text) <= 4000:
         try:
-            bot.send_message(chat_id, text, parse_mode="Markdown")
+            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            bot.send_message(chat_id, text)
+            bot.send_message(chat_id, text, reply_markup=reply_markup)
     else:
-        for chunk in [text[i:i+3900] for i in range(0, len(text), 3900)]:
+        chunks = [text[i:i+3900] for i in range(0, len(text), 3900)]
+        for i, chunk in enumerate(chunks):
+            m = reply_markup if i == len(chunks) - 1 else None
             try:
-                bot.send_message(chat_id, chunk, parse_mode="Markdown")
+                bot.send_message(chat_id, chunk, parse_mode="Markdown", reply_markup=m)
             except Exception:
-                bot.send_message(chat_id, chunk)
-                
+                bot.send_message(chat_id, chunk, reply_markup=m)
+
+def analyze_with_ai(text_to_analyze):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text_to_analyze}
+        ],
+        "temperature": 0.3
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=25)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        return f"Ошибка ИИ (Код {response.status_code})"
+    except Exception as e:
+        return f" Ошибка соединения с ИИ: {e}"
+
+# === ОБРАБОТКА КОМАНД И КНОПОК ===
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, WELCOME_TEXT, parse_mode="Markdown")
+    welcome_text = (
+        "*Приветствуем!*\n\n"
+        "Для подачи анкеты нажмите кнопку ниже или выберите роль.\n\n"
+        "*📌 Как работает проверка:*\n"
+        "• Все первичные ошибки выявляет авто-модератор.\n"
+        "• Сообщения объединяются в течение *30 секунд*.\n"
+        "• После одобрения ботом анкета поступает на личное рассмотрение администрации.\n\n"
+        "❓ По вопросам обращайтесь к @CrazyCrabSalad."
+    )
+    bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
+@bot.message_handler(func=lambda m: m.text == "📝 Отправить анкету")
+def start_application(message):
+    bot.send_message(
+        message.chat.id, 
+        "Выберите, кем является ваш персонаж:", 
+        reply_markup=get_role_keyboard()
+    )
+
+@bot.message_handler(func=lambda m: m.text == "❓ Апелляция / Помощь")
+def show_help(message):
+    help_text = (
+        "*📌 Инструкция по апелляции и связи:*\n\n"
+        "Если вы не согласны с замечаниями бота, отправьте анкету повторно, добавив в начало сообщения:\n"
+        "1. Слово: *Апелляция*\n"
+        "2. Раздел: *Пояснение:* (ваши аргументы)\n\n"
+        "Прямой контакт администрации: @CrazyCrabSalad"
+    )
+    bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("role_"))
+def handle_role_selection(call):
+    role = "Домовец" if call.data == "role_domovets" else "Персонал / Опекун"
+    user_roles[call.message.chat.id] = role
+    bot.answer_callback_query(call.id, f"Выбрана роль: {role}")
+    bot.send_message(
+        call.message.chat.id, 
+        f"✅ Категория зафиксирована: *{role}*.\n\n"
+        "Теперь отправьте текст вашей анкеты сюда в чат (одним или несколькими сообщениями подряд).",
+        parse_mode="Markdown"
+    )
+
+# === ОБРАБОТКА АДМИН-КНОПОК ===
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_"))
+def handle_admin_actions(call):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    data = call.data.split("_")
+    action = data[1]
+    target_user_id = int(data[2])
+
+    if action == "accept":
+        bot.send_message(target_user_id, "🎉 *Поздравляем! Ваша анкета официально принята администрацией!* Добро пожаловать!", parse_mode="Markdown")
+        bot.answer_callback_query(call.id, "Уведомление о принятии отправлено!")
+        bot.edit_message_text(f"{call.message.text}\n\n✅ **ПРИНЯТО АДМИНИСТРАТОРОМ**", call.message.chat.id, call.message.message_id)
+
+    elif action == "reject":
+        bot.send_message(target_user_id, "❌ *К сожалению, ваша анкета была отклонена администрацией.* Свяжитесь с @CrazyCrabSalad для уточнения деталей.", parse_mode="Markdown")
+        bot.answer_callback_query(call.id, "Уведомление об отказе отправлено!")
+        bot.edit_message_text(f"{call.message.text}\n\n❌ **ОТКЛОНЕНО АДМИНИСТРАТОРОМ**", call.message.chat.id, call.message.message_id)
+
+    elif action == "reply":
+        admin_reply_state[ADMIN_ID] = target_user_id
+        bot.send_message(ADMIN_ID, f"💬 Напишите ответ для игрока (ID: `{target_user_id}`). Следующее ваше сообщение будет отправлено ему напрямую:", parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
+
+# === СБОРА И ОБРАБОТКА АНКЕТЫ ===
 def process_buffered_application(user_id, message_obj):
-    """Функция обработки анкеты после истечения 30 секунд"""
     full_text = "\n\n".join(user_buffers.get(user_id, []))
+    role = user_roles.get(user_id, "Не указана")
     user_buffers.pop(user_id, None)
     user_timers.pop(user_id, None)
 
     user_info = f"@{message_obj.from_user.username}" if message_obj.from_user.username else f"ID: {message_obj.from_user.id}"
     lower_text = full_text.lower()
 
-    # === БЛОК ПРОВЕРКИ АПЕЛЛЯЦИИ ===
     if "апелляция" in lower_text or "аппеляция" in lower_text:
-        has_appeal = "апелляция" in lower_text or "аппеляция" in lower_text
-        has_explanation = "пояснение" in lower_text
-
-        if has_appeal and has_explanation:
-            bot.send_message(message_obj.chat.id, "Ваша апелляция принята! Анкета отправлена напрямую администратору на личное рассмотрение.")
-            
-            admin_msg_1 = (
-                f"📩 **АПЕЛЛЯЦИЯ ОТ ИГРОКА!**\n"
-                f"От: {message_obj.from_user.first_name} ({user_info})\n"
-                f"Игрок подал апелляцию и не согласен с решением авто-системы."
-            )
-            send_smart_message(ADMIN_ID, admin_msg_1)
-
+        if ("апелляция" in lower_text or "аппеляция" in lower_text) and "пояснение" in lower_text:
+            bot.send_message(message_obj.chat.id, "Ваша апелляция принята! Анкета отправлена напрямую администратору.")
             ai_report = analyze_with_ai(full_text)
-
-            admin_msg_2 = f"📋 **СПОСОБНЫЕ ОШИБКИ ПО МНЕНИЮ ИИ:**\n\n{ai_report}"
-            send_smart_message(ADMIN_ID, admin_msg_2)
-
-            admin_msg_3 = f"📝 **ТЕКСТ АПЕЛЛЯЦИИ И АНКЕТЫ:**\n\n{full_text}"
-            send_smart_message(ADMIN_ID, admin_msg_3)
-            return
-        else:
-            bot.send_message(
-                message_obj.chat.id, 
-                "⚠️ **Ошибка при подаче апелляции!**\n\n"
-                "Для подачи апелляции в сообщении должны присутствовать ДВА ключевых слова:\n"
-                "1. **Апелляция**\n"
-                "2. **Пояснение:** (подробно распишите, почему вы не согласны с ботом).\n\n"
-                "Пожалуйста, отправьте анкету повторно с выполнением этих условий."
+            
+            admin_msg = (
+                f"📩 *АПЕЛЛЯЦИЯ ОТ ИГРОКА!*\n"
+                f"От: {message_obj.from_user.first_name} ({user_info})\n"
+                f"Роль: *{role}*\n\n"
+                f"📋 *АНАЛИЗ ИИ:*\n{ai_report}\n\n"
+                f"📄 *ПОЛНЫЙ ТЕКСТ:* \n{full_text}"
             )
+            send_smart_message(ADMIN_ID, admin_msg, reply_markup=get_admin_action_keyboard(user_id))
             return
-    # ===============================
 
     report = analyze_with_ai(full_text)
 
     if "Требует правок" in report:
-        appeal_instruction = (
-            "\n\n---\n"
-            "📌 **Не согласны с ошибками бота?**\n"
-            "Вы можете подать апелляцию напрямую владельцу. Для этого отправьте повторно анкету в чат, обязательно указав в тексте:\n"
-            "• Слово: **Апелляция**\n"
-            "• Раздел: **Пояснение:** (где вы аргументируете свою позицию)."
-        )
-        
         user_response = (
-            "⚠️ **Ваша анкета содержит замечания и требует правок:**\n\n"
+            "⚠️ *Ваша анкета содержит замечания и требует правок:*\n\n"
             f"{report}\n\n"
-            "📌 **Пожалуйста, исправьте указанные недочёты и отправьте исправленный вариант сюда в чат.**\n"
-            "💡 *Примечание: Если ваша анкета разделена на несколько частей, отправляйте их подряд в течение 30 секунд — бот объединит их в одно сообщение.*"
-            f"{appeal_instruction}\n\n"
-            "*(P.s. если есть какие-то противоречия с замечаниями, напишите пожалуйста админам или прям в бота, чтобы владелец принял во внимание).*"
+            "📌 Пожалуйста, исправьте указанные недочёты и отправьте антету повторно."
         )
         send_smart_message(message_obj.chat.id, user_response)
-        else:
-        bot.send_message(message_obj.chat.id, "Ваша анкета и материалы приняты на проверку! Ожидайте решения.")
+    else:
+        bot.send_message(message_obj.chat.id, "Ваша анкета успешно прошла первичную проверку и передана администратору! Ожидайте вердикта.")
         
-        # 1. Отправляем админу анализ ИИ
-        admin_header = (
-            f"📥 **Новая готовая анкета на проверку!**\n"
-            f"От: {message_obj.from_user.first_name} ({user_info})\n\n"
-            f"--- **АНАЛИЗ ИИ** ---\n\n"
+        admin_msg = (
+            f"📥 *НОВАЯ ГОТОВАЯ АНКЕТА!*\n"
+            f"От: {message_obj.from_user.first_name} ({user_info})\n"
+            f"Категория: *{role}*\n\n"
+            f"--- *АНАЛИЗ ИИ* ---\n{report}\n\n"
+            f"--- *ПОЛНЫЙ ТЕКСТ* ---\n{full_text}"
         )
-        send_smart_message(ADMIN_ID, admin_header + report)
+        send_smart_message(ADMIN_ID, admin_msg, reply_markup=get_admin_action_keyboard(user_id))
 
-        # 2. Отправляем админу ПОЛНЫЙ текст анкеты (со всеми склеенными частями)
-        full_application_msg = f"📄 **ПОЛНЫЙ ТЕКСТ АНКЕТЫ:**\n\n{full_text}"
-        send_smart_message(ADMIN_ID, full_application_msg)
-    
-def analyze_with_ai(text):
-    """Запрос к API Groq"""
-    try:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Вот анкета для проверки:\n\n{text}"}
-            ]
-        }
-        res = requests.post(url, json=payload, headers=headers)
-        res_data = res.json()
-        if "choices" in res_data:
-            return res_data['choices'][0]['message']['content']
-        return f"Ошибка сервиса: {res_data}"
-    except Exception as e:
-        return f"Ошибка при вызове ИИ: {e}"
-
-@bot.message_handler(content_types=['text', 'photo', 'audio', 'document'])
-def handle_application(message):
-    if message.from_user.id == ADMIN_ID:
-        bot.reply_to(message, "Вы администратор. Сюда будут приходить анкеты от игроков.")
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    # Обработка ответа администратора игроку
+    if message.from_user.id == ADMIN_ID and ADMIN_ID in admin_reply_state:
+        target_id = admin_reply_state.pop(ADMIN_ID)
+        try:
+            bot.send_message(target_id, f"✉️ *Сообщение от администрации:*\n\n{message.text}", parse_mode="Markdown")
+            bot.send_message(ADMIN_ID, "✅ Сообщение успешно доставлено игроку!")
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"❌ Не удалось отправить сообщение: {e}")
         return
 
+    # Сбор текста анкеты от пользователя
     user_id = message.from_user.id
-    text_content = message.text or message.caption or ""
-
-    if not text_content and (message.photo or message.audio or message.document):
-        bot.reply_to(message, "Файл получен! Не забудь отправить сам текст анкеты.")
-        bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
-        return
-
     if user_id not in user_buffers:
         user_buffers[user_id] = []
-    
-    user_buffers[user_id].append(text_content)
+
+    user_buffers[user_id].append(message.text)
 
     if user_id in user_timers:
         user_timers[user_id].cancel()
@@ -244,6 +257,5 @@ def handle_application(message):
     user_timers[user_id] = t
     t.start()
 
-print("Бот запущен!")
-bot.infinity_polling()
-   
+if __name__ == "__main__":
+    bot.polling(none_stop=True)
