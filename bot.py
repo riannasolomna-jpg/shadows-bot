@@ -4,12 +4,27 @@ import threading
 import requests
 import telebot
 from dotenv import load_dotenv
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 load_dotenv()
 
-BOT_TOKEN = "8644839960:AAGuezNejW02oqd6omY4GLzmYV7j56INarw"
-GROQ_API_KEY = "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"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8644839960:AAGuezNejW02oqd6omY4GLzmYV7j56INarw")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "ВСТАВЬ_СЮДА_КЛЮЧ_GROQ")
 ADMIN_ID = 5076963429
+
+# Простой веб-сервер, чтобы Render Free Web Service не закрывал процесс
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_health_check_server, daemon=True).start()
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -213,4 +228,4 @@ def handle_application(message):
 
 print("Бот запущен!")
 bot.infinity_polling()
-
+   
