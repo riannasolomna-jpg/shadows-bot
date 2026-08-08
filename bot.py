@@ -9,7 +9,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8644839960:AAGuezNejW02oqd6omY4GLzmYV7j56INarw")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "ВСТАВЬ_СЮДА_КЛЮЧ_GROQ")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 ADMIN_ID = 5076963429
 
 # Простой веб-сервер, чтобы Render Free Web Service не закрывал процесс
