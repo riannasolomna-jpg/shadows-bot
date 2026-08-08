@@ -175,17 +175,21 @@ def process_buffered_application(user_id, message_obj):
             "*(P.s. если есть какие-то противоречия с замечаниями, напишите пожалуйста админам или прям в бота, чтобы владелец принял во внимание).*"
         )
         send_smart_message(message_obj.chat.id, user_response)
-    else:
+        else:
         bot.send_message(message_obj.chat.id, "Ваша анкета и материалы приняты на проверку! Ожидайте решения.")
         
+        # 1. Отправляем админу анализ ИИ
         admin_header = (
             f"📥 **Новая готовая анкета на проверку!**\n"
             f"От: {message_obj.from_user.first_name} ({user_info})\n\n"
             f"--- **АНАЛИЗ ИИ** ---\n\n"
         )
         send_smart_message(ADMIN_ID, admin_header + report)
-        bot.forward_message(ADMIN_ID, message_obj.chat.id, message_obj.message_id)
 
+        # 2. Отправляем админу ПОЛНЫЙ текст анкеты (со всеми склеенными частями)
+        full_application_msg = f"📄 **ПОЛНЫЙ ТЕКСТ АНКЕТЫ:**\n\n{full_text}"
+        send_smart_message(ADMIN_ID, full_application_msg)
+    
 def analyze_with_ai(text):
     """Запрос к API Groq"""
     try:
