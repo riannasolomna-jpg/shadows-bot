@@ -99,19 +99,22 @@ SYSTEM_PROMPT = """
 """
 
 def send_smart_message(chat_id, text):
-    """Безопасная отправка длинных сообщений"""
+    """Безопасная отправка длинных сообщений с поддержкой Markdown"""
     if len(text) <= 4000:
         try:
             bot.send_message(chat_id, text, parse_mode="Markdown")
-        except:
+        except Exception:
             bot.send_message(chat_id, text)
     else:
         for chunk in [text[i:i+3900] for i in range(0, len(text), 3900)]:
-            bot.send_message(chat_id, chunk)
-
+            try:
+                bot.send_message(chat_id, chunk, parse_mode="Markdown")
+            except Exception:
+                bot.send_message(chat_id, chunk)
+                
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, WELCOME_TEXT)
+    bot.reply_to(message, WELCOME_TEXT, parse_mode="Markdown")
 
 def process_buffered_application(user_id, message_obj):
     """Функция обработки анкеты после истечения 30 секунд"""
