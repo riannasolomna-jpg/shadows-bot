@@ -14,10 +14,9 @@ ADMIN_ID = 5076963429  # Твой Telegram ID
 bot = telebot.TeleBot(BOT_TOKEN)
 client = groq.Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Временное хранилище анкет пользователей
 user_states = {}
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (HEALTH CHECK) ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -95,42 +94,44 @@ def handle_category_choice(call):
         parse_mode="Markdown"
     )
 
-# --- АНАЛИЗ АНКЕТЫ ЧЕРЕЗ GROQ ИИ (ГРАММАТИКА + ЛОГИКА) ---
+# --- АНАЛИЗ АНКЕТЫ ЧЕРЕЗ GROQ ИИ ---
 def analyze_anketa_with_ai(text):
     if not client:
         return False, "Ошибка ИИ: Не настроен GROQ_API_KEY"
     
     prompt = f"""
-Ты — строгий редактор и модератор текстовой ролевой игры по вселенной «Дом, в котором...».
+Ты — модератор и редактор текстовой ролевой игры по вселенной «Дом, в котором...».
+Внимательно прочитай анкету:
 
-Твоя задача — детально проверить предложенную анкету на:
-1. Орфографические, пунктуационные и грамматические ошибки (каждую найденную ошибку выпиши отдельно по пунктам с указанием верного написания).
-2. Логические неувязки и соответствие канону/атмосфере вселенной.
-
-Текст анкеты:
 {text}
 
-Ответь СТРОГО в следующем формате:
+Твоя задача — найти абсолютно ВСЕ орфографические, пунктуационные и грамматические ошибки, а также проверить логику.
+
+Если в анкете есть ХОТЯ БЫ ОДНА орфографическая/пунктуационная ошибка, опечатка или логическая нестыковка — статус должен быть строго "ОТКЛОНЕНО".
+
+Сформируй ответ строго по этой структуре:
+
 СТАТУС: [ОДОБРЕНО / ОТКЛОНЕНО]
-(Ставь ОТКЛОНЕНО, если в анкете есть грубые орфографические/пунктуационные ошибки или сюжетные нестыковки).
 
-📌 **Орфографические и пунктуационные ошибки:**
-• [Ошибка 1] -> [Как правильно]
-• [Ошибка 2] -> [Как правильно]
-(Если ошибок нет, напиши "Ошибок не обнаружено")
+📌 **Найденные ошибки и опечатки:**
+• [Каждую ошибку выпиши отдельно с исправлением. Например: "птиць" -> "птиц", "недостаточност" -> "недостаточность", пропущенные запятые]
 
-📌 **Логика и канон персонажа:**
-• [Краткий разбор логики и сюжета по пунктам]
+📌 **Разбор логики и канона:**
+• [Кратко 2-3 пункта по логике персонажа]
 """
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=1000
+            temperature=0.2,
+            max_tokens=900
         )
         result = response.choices[0].message.content
-        is_passed = "СТАТУС: ОДОБРЕНО" in result or "ОДОБРЕНО" in result.split('\n')[0]
+        
+        # Проверка вердикта
+        first_line = result.split('\n')[0].upper()
+        is_passed = "ОДОБРЕНО" in first_line and "ОТКЛОНЕНО" not in first_line
+        
         return is_passed, result
     except Exception as e:
         return False, f"Ошибка ИИ (Код ошибки: {e})"
@@ -141,7 +142,6 @@ def receive_anketa(message):
     chat_id = message.chat.id
     text = message.text or ""
 
-    # Проверка длины
     if len(text.strip()) < 100:
         bot.send_message(
             chat_id,
@@ -160,21 +160,20 @@ def receive_anketa(message):
         reply_markup=get_main_keyboard()
     )
 
-    # Проверка через ИИ
     is_passed, ai_analysis = analyze_anketa_with_ai(text)
 
-    # Если ИИ отклонил или ключ упал
+    # Если ИИ нашел ошибки — анкету АДМИНУ НЕ ОТПРАВЛЯЕМ, отправляем разбор пользователю
     if not is_passed and "Ошибка ИИ" not in ai_analysis:
         bot.send_message(
             chat_id,
             f"❌ **Ваша анкета не прошла первичную проверку!**\n\n"
             f"{ai_analysis}\n\n"
-            f"Пожалуйста, исправьте указанные ошибки и отправьте анкету заново через меню.",
+            f"Пожалуйста, исправьте ошибки и отправьте анкету заново через меню.",
             parse_mode="Markdown"
         )
         return
 
-    # Отправка администратору
+    # Если прошла проверку или вылезла ошибка ключа ИИ
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
     user_fullname = message.from_user.full_name
 
@@ -182,7 +181,7 @@ def receive_anketa(message):
         f"📥 **НОВАЯ ГОТОВАЯ АНКЕТА!**\n"
         f"От: {user_fullname} ({username})\n"
         f"Категория: *{category}*\n\n"
-        f"--- **АНАЛИЗ ИИ (ОШИБКИ И ЛОГИКА)** ---\n"
+        f"--- **АНАЛИЗ ИИ** ---\n"
         f"{ai_analysis}\n\n"
         f"--- **ПОЛНЫЙ ТЕКСТ** ---\n"
         f"{text}"
@@ -227,7 +226,6 @@ def send_reply_to_user(message, target_chat_id):
     bot.send_message(target_chat_id, f"💬 **Сообщение от администрации:**\n\n{message.text}", parse_mode="Markdown")
     bot.send_message(ADMIN_ID, "Сообщение успешно доставлено пользователю!")
 
-# --- ЗАПУСК ВЕБ-СЕРВЕРА И БОТА ---
 if __name__ == '__main__':
     Thread(target=run_flask, daemon=True).start()
     bot.infinity_polling(skip_pending_updates=True)
