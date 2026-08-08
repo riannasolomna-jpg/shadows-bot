@@ -88,37 +88,52 @@ def handle_category_choice(call):
     
     bot.edit_message_text(
         f"Выбрана категория: **{category}**.\n\n"
-        "📌 **Пришлите текст вашей анкеты одним или несколькими сообщениями.**\n"
-        "⚠️ Анкета должна содержать подробное описание (не менее 100 символов).",
+        "📌 **Пришлите текст вашей анкеты единым сообщением.**\n"
+        "⚠️ Анкета должна содержать подробное описание персонажа (не менее 100 символов).",
         chat_id=chat_id,
         message_id=call.message.message_id,
         parse_mode="Markdown"
     )
 
-# --- АНАЛИЗ АНКЕТЫ ЧЕРЕЗ GROQ ИИ ---
+# --- АНАЛИЗ АНКЕТЫ ЧЕРЕЗ GROQ ИИ (ГРАММАТИКА + ЛОГИКА) ---
 def analyze_anketa_with_ai(text):
     if not client:
-        return "Ошибка ИИ (Не настроен GROQ_API_KEY)"
+        return False, "Ошибка ИИ: Не настроен GROQ_API_KEY"
     
     prompt = f"""
-Ты — строгий модератор текстовой ролевой игры по вселенной «Дом, в котором...».
-Проанализируй следующую анкету персонажа на предмет ошибок, логических неувязок и соответствия атмосфере.
+Ты — строгий редактор и модератор текстовой ролевой игры по вселенной «Дом, в котором...».
+
+Твоя задача — детально проверить предложенную анкету на:
+1. Орфографические, пунктуационные и грамматические ошибки (каждую найденную ошибку выпиши отдельно по пунктам с указанием верного написания).
+2. Логические неувязки и соответствие канону/атмосфере вселенной.
 
 Текст анкеты:
 {text}
 
-Выдай краткий разбор (3-5 пунктов) с указанием сильных сторон и замечаний/ошибок, если они есть.
+Ответь СТРОГО в следующем формате:
+СТАТУС: [ОДОБРЕНО / ОТКЛОНЕНО]
+(Ставь ОТКЛОНЕНО, если в анкете есть грубые орфографические/пунктуационные ошибки или сюжетные нестыковки).
+
+📌 **Орфографические и пунктуационные ошибки:**
+• [Ошибка 1] -> [Как правильно]
+• [Ошибка 2] -> [Как правильно]
+(Если ошибок нет, напиши "Ошибок не обнаружено")
+
+📌 **Логика и канон персонажа:**
+• [Краткий разбор логики и сюжета по пунктам]
 """
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.6,
-            max_tokens=600
+            temperature=0.4,
+            max_tokens=1000
         )
-        return response.choices[0].message.content
+        result = response.choices[0].message.content
+        is_passed = "СТАТУС: ОДОБРЕНО" in result or "ОДОБРЕНО" in result.split('\n')[0]
+        return is_passed, result
     except Exception as e:
-        return f"Ошибка ИИ (Код ошибки: {e})"
+        return False, f"Ошибка ИИ (Код ошибки: {e})"
 
 # --- ПРИЕМ И ВАЛИДАЦИЯ АНКЕТЫ ---
 @bot.message_handler(func=lambda msg: user_states.get(msg.chat.id, {}).get('step') == 'waiting_anketa')
@@ -126,13 +141,12 @@ def receive_anketa(message):
     chat_id = message.chat.id
     text = message.text or ""
 
-    # Проверка на минимальную длину (фильтр от "...", "Fjjf" и случайных нажатий)
+    # Проверка длины
     if len(text.strip()) < 100:
         bot.send_message(
             chat_id,
             "❌ **Анкета слишком короткая!**\n\n"
-            "Пожалуйста, распишите анкету подробнее (кличка, пол, внешность, характер, история) "
-            "и пришлите её снова.",
+            "Пожалуйста, распишите анкету подробнее (не менее 100 символов).",
             parse_mode="Markdown"
         )
         return
@@ -142,14 +156,25 @@ def receive_anketa(message):
 
     bot.send_message(
         chat_id,
-        "⏳ Ваша анкета принята и отправлена на проверку авто-модератору и администрации...",
+        "⏳ Ваша анкета проверяется авто-модератором на грамотность и логику...",
         reply_markup=get_main_keyboard()
     )
 
     # Проверка через ИИ
-    ai_analysis = analyze_anketa_with_ai(text)
+    is_passed, ai_analysis = analyze_anketa_with_ai(text)
 
-    # Формирование карточки для админа
+    # Если ИИ отклонил или ключ упал
+    if not is_passed and "Ошибка ИИ" not in ai_analysis:
+        bot.send_message(
+            chat_id,
+            f"❌ **Ваша анкета не прошла первичную проверку!**\n\n"
+            f"{ai_analysis}\n\n"
+            f"Пожалуйста, исправьте указанные ошибки и отправьте анкету заново через меню.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Отправка администратору
     username = f"@{message.from_user.username}" if message.from_user.username else "Отсутствует"
     user_fullname = message.from_user.full_name
 
@@ -157,13 +182,12 @@ def receive_anketa(message):
         f"📥 **НОВАЯ ГОТОВАЯ АНКЕТА!**\n"
         f"От: {user_fullname} ({username})\n"
         f"Категория: *{category}*\n\n"
-        f"--- **АНАЛИЗ ИИ** ---\n"
+        f"--- **АНАЛИЗ ИИ (ОШИБКИ И ЛОГИКА)** ---\n"
         f"{ai_analysis}\n\n"
         f"--- **ПОЛНЫЙ ТЕКСТ** ---\n"
         f"{text}"
     )
 
-    # Клавиатура решений для админа
     admin_markup = types.InlineKeyboardMarkup(row_width=2)
     admin_markup.add(
         types.InlineKeyboardButton("✅ Принять", callback_data=f"accept_{chat_id}"),
@@ -173,14 +197,13 @@ def receive_anketa(message):
         types.InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{chat_id}")
     )
 
-    # Отправка админу
     if len(admin_caption) > 4000:
         bot.send_message(ADMIN_ID, admin_caption[:4000], parse_mode="Markdown")
         bot.send_message(ADMIN_ID, admin_caption[4000:], parse_mode="Markdown", reply_markup=admin_markup)
     else:
         bot.send_message(ADMIN_ID, admin_caption, parse_mode="Markdown", reply_markup=admin_markup)
 
-# --- РЕАКЦИЯ АДМИНА (КНОПКИ В АДМИНКЕ) ---
+# --- РЕАКЦИЯ АДМИНА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("accept_", "reject_", "reply_")))
 def handle_admin_action(call):
     if call.from_user.id != ADMIN_ID:
