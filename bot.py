@@ -1362,19 +1362,26 @@ def send_reply_to_user(
 # ЗАПУСК
 # ============================================================
 
-
 if __name__ == '__main__':
+    print("🔥 1. PROGRAM STARTED")
+
     Thread(target=run_flask, daemon=True).start()
 
-    print("🔥 BOT STARTING")
-    print("BOT TOKEN EXISTS:", bool(BOT_TOKEN))
+    print("🔥 2. FLASK THREAD STARTED")
+    print("🔥 3. TOKEN EXISTS:", bool(BOT_TOKEN))
 
-    bot.delete_webhook()
+    try:
+        print("🔥 4. DELETING WEBHOOK...")
+        result = bot.delete_webhook()
+        print("🔥 5. WEBHOOK DELETE RESULT:", result)
 
-    print("🔥 WEBHOOK DELETED")
-    print("🔥 STARTING POLLING")
+        print("🔥 6. STARTING POLLING...")
 
-    bot.infinity_polling(
-        timeout=30,
-        long_polling_timeout=30
-    )
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=30
+        )
+
+    except Exception as e:
+        print("🔥 ❌ BOT ERROR:", repr(e))
+        raise
