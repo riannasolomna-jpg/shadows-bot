@@ -1374,8 +1374,6 @@ if __name__ == "__main__":
     print("🤖 Telegram-бот запускается...")
 
     bot.infinity_polling(
-        skip_pending_updates=True,
         timeout=30,
         long_polling_timeout=30
     )
-
