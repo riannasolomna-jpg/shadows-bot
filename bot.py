@@ -1362,16 +1362,17 @@ def send_reply_to_user(
 # ЗАПУСК
 # ============================================================
 
-if __name__ == "__main__":
 
-    print("🚀 Запуск Flask-сервера...")
+if __name__ == '__main__':
+    Thread(target=run_flask, daemon=True).start()
 
-    Thread(
-        target=run_flask,
-        daemon=True
-    ).start()
+    print("🔥 BOT STARTING")
+    print("BOT TOKEN EXISTS:", bool(BOT_TOKEN))
 
-    print("🤖 Telegram-бот запускается...")
+    bot.delete_webhook()
+
+    print("🔥 WEBHOOK DELETED")
+    print("🔥 STARTING POLLING")
 
     bot.infinity_polling(
         timeout=30,
