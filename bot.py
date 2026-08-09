@@ -1361,7 +1361,6 @@ def send_reply_to_user(
         # ============================================================
 # ЗАПУСК
 # ============================================================
-
 if __name__ == '__main__':
     print("🔥 1. PROGRAM STARTED")
 
@@ -1371,13 +1370,13 @@ if __name__ == '__main__':
     print("🔥 3. TOKEN EXISTS:", bool(BOT_TOKEN))
 
     try:
-    print("🔥 4. STARTING POLLING...")
+        print("🔥 4. STARTING POLLING...")
 
-    bot.infinity_polling(
-        timeout=30,
-        long_polling_timeout=30
-    )
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=30
+        )
 
-except Exception as e:
-    print("🔥 ❌ BOT ERROR:", repr(e))
-    raise
+    except Exception as e:
+        print("🔥 ❌ BOT ERROR:", repr(e))
+        raise
